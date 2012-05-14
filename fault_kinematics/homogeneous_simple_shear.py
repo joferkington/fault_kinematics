@@ -2,14 +2,17 @@ import numpy as np
 import scipy.interpolate as interpolate
 import scipy.optimize
 
-def invert_slip(faultxyz, horizonxyz, alpha, guess=(0,0), return_metric=False, 
-                verbose=False, overlap_thresh=0.3):
+def invert_slip(faultxyz, horizonxyz, alpha=None, guess=(0,0), 
+                return_metric=False, verbose=False, overlap_thresh=0.3, 
+                **kwargs):
     """
-    Given a fault, horizon, shear angle, and starting guess, find the offset
-    vector that best flattens the horizon using Powell's method.
+    Given a fault, horizon, and optionally, a shear angle, and starting guess, 
+    find the offset vector that best flattens the horizon using Powell's method.
+
+    If the shear angle (`alpha`) is not specified, invert for an offset vector
+    and a shear angle.
 
     Uses the variance as a metric of "flatness".  
-    
 
     Parameters:
     -----------
@@ -18,60 +21,34 @@ def invert_slip(faultxyz, horizonxyz, alpha, guess=(0,0), return_metric=False,
         alpha : A shear angle (in degrees) measured from vertical (i.e.
             vertical shear corresponds to alpha=0) through which the hanging
             wall deforms. This is constrained to lie in the vertical plane
-            defined by the slip vector.
-        guess : An initial displacement vector of (dx, dy).
+            defined by the slip vector. If alpha is None, it will be solved for.
+        guess : An initial displacement vector of (dx, dy) or (dx, dy, alpha)
+            if alpha is not specified.
         return_metric : If True, return the minimized "roughness".
-        verbose : If True, print the slip and roughness at each iteration
         overlap_thresh : If less than `overlap_thresh*100` percent of the 
             "moved" horizon's points are within the bounds of the fault, the 
             result is penalized.
 
+        Additional keyword arguments are passed on to scipy.optimize.fmin_powell
+
     Returns:
     --------
-        slip : A sequence of `(dx, dy)` defining the offset vector that best
-            flattens the horizon
+        slip : A sequence of `(dx, dy)` or `(dx, dy, alpha)` if alpha is not 
+            manually specified, defining the offset vector (and/or shear angle)
+            that best flattens the horizon
         metric : (Only if return_metric is True) The resulting "flattness".
     """
-    class Shear(object):
-        def __init__(self, fault, horizon, alpha):
-            self.fault, self.horizon = fault, horizon
-            self.alpha = alpha
+    if (alpha is None) and (len(guess) == 2):
+        guess = guess + (0,)
 
-            # Tracking these for non-overlap penalty
-            self.starting_metric = self.horizon[:,-1].var()
-            self.overlap_thresh = overlap_thresh
-            self.numpoints = horizon.shape[0]
+    func = _Shear(faultxyz, horizonxyz, alpha, overlap_thresh)
 
-        def __call__(self, slip):
-            hor = inclined_shear(self.fault, self.horizon, slip, self.alpha)
-            metric = self.metric(hor, slip)
+    # Set a few defaults...
+    kwargs['disp'] = kwargs.get('disp', False)
+    kwargs['full_output'] = True
 
-            if verbose:
-                print slip, metric
-
-            return metric
-
-        def metric(self, result, slip):
-            if len(result) > 0:
-                # Variance of the elevation values
-                roughness = result[:,-1].var()
-            else:
-                roughness = self.starting_metric
-
-            if result.shape[0] < self.overlap_thresh * self.numpoints:
-                # If we're mostly off of the fault, penalize the result. 
-                # We want to make sure it's never better than the roughness
-                # of the "unmoved" horizon. (Also trying to avoid "hard" edges
-                # here... If we just make it 1e10, it leads to instabilities.
-                var = max(self.starting_metric, roughness)
-                roughness = var * (1 + np.hypot(*slip))
-
-            return roughness
-
-    func = Shear(faultxyz, horizonxyz, alpha)
     # Powell's method appears more reliable than CG for this problem...
-    items = scipy.optimize.fmin_powell(func, guess, full_output=True, 
-                                       disp=False)
+    items = scipy.optimize.fmin_powell(func, guess, **kwargs)
     slip = items[0]
 
     if return_metric:
@@ -198,4 +175,72 @@ def rotate(xyz, theta, alpha, phi=0, inverse=False):
     if inverse:
         rot = np.linalg.inv(rot)
     return rot.dot(xyz.T).T
+
+class _Shear(object):
+    """
+    A convience class to minimize "roughness" when inverting for the slip 
+    and/or shear angle that best "flattens" the give horizon by moving it along
+    the given fault.
+    """
+    def __init__(self, fault, horizon, alpha=None, overlap_thresh=0.3):
+        """
+        Parameters:
+        -----------
+            fault : An Nx3 array of points making up the fault surface
+            hor : An Mx3 array of points along the horizon surface
+            alpha : A shear angle (in degrees) measured from vertical (i.e.
+                vertical shear corresponds to alpha=0) through which the
+                hanging wall deforms. This is constrained to lie in the
+                vertical plane defined by the slip vector. If alpha is None, it
+                is assumed to be given when the _Shear instance is called.
+            overlap_thresh : If less than `overlap_thresh*100` percent of the
+                "moved" horizon's points are within the bounds of the fault,
+                the result is penalized.
+        """
+        self.fault, self.horizon = fault, horizon
+        self.alpha = alpha
+
+        # Tracking these for non-overlap penalty
+        self.starting_metric = self.horizon[:,-1].var()
+        self.overlap_thresh = overlap_thresh
+        self.numpoints = horizon.shape[0]
+
+    def __call__(self, model):
+        """
+        Return the misfit ("roughness") metric for a given slip and/or shear
+        angle.
+
+        Parameters:
+        -----------
+            model : A displacement vector of (dx, dy) or (dx, dy, alpha)
+                if alpha was not specified during initialization.
+        """
+        if self.alpha is None:
+            slip = model[:2]
+            alpha = model[-1]
+        else:
+            slip = model
+            alpha = self.alpha
+        hor = inclined_shear(self.fault, self.horizon, slip, alpha)
+        metric = self.metric(hor, slip)
+        return metric
+
+    def metric(self, result, slip):
+        """The "roughness" of the result."""
+        if len(result) > 0:
+            # Variance of the elevation values
+            roughness = result[:,-1].var()
+        else:
+            roughness = self.starting_metric
+
+        if result.shape[0] < self.overlap_thresh * self.numpoints:
+            # If we're mostly off of the fault, penalize the result. 
+            # We want to make sure it's never better than the roughness
+            # of the "unmoved" horizon. (Also trying to avoid "hard" edges
+            # here... If we just make it 1e10, it leads to instabilities.
+            var = max(self.starting_metric, roughness)
+            roughness = var * (1 + np.hypot(*slip))
+
+        return roughness
+
 
