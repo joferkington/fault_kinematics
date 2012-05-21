@@ -56,7 +56,7 @@ def invert_slip(faultxyz, horizonxyz, alpha=None, guess=(0,0),
     else:
         return slip
 
-def vertical_shear(faultxyz, horxyz, slip):
+def vertical_shear(faultxyz, horxyz, slip, remove_invalid=True):
     """
     Models vertical shear along a fault.  Uses Piecewise linear interpolation
     to define surfaces from the given, unordered, points.
@@ -68,6 +68,10 @@ def vertical_shear(faultxyz, horxyz, slip):
         slip : A displacement vector in 2 or 3 dimensions.  If 2D, the
             last element is assumed to be 0. (3D is allowed so that this 
             function can be used easily within the inclined_shear function.)
+        remove_invalid : A boolean indicating whether points that have been
+            moved off the fault's surface and have undefined values should be
+            removed from the results. If True, only valid points will be 
+            returned, if False, the result may have NaN's.
 
     Returns:
     --------
@@ -91,15 +95,18 @@ def vertical_shear(faultxyz, horxyz, slip):
 
     # Remove points that have been moved off the fault, as their values are
     # undefined.
-    mask = np.isfinite(dz)
-    horxyz = horxyz[mask]
+    if remove_invalid:
+        mask = np.isfinite(dz)
+        horxyz = horxyz[mask]
+    else:
+        mask = np.ones(dz.shape, dtype=np.bool)
 
     # Update the horizon's position
     horxyz[:,:2] += [dx, dy]
     horxyz[:,-1] += dz[mask]
     return horxyz
 
-def inclined_shear(faultxyz, horxyz, slip, alpha):
+def inclined_shear(faultxyz, horxyz, slip, alpha, remove_invalid=True):
     """
     Models homogenous inclined shear along a fault.  This assumes that the
     shear angle lies in the plane of slip. Uses Piecewise linear interpolation
@@ -114,6 +121,10 @@ def inclined_shear(faultxyz, horxyz, slip, alpha):
             vertical shear corresponds to alpha=0) through which the hanging
             wall deforms. This is constrained to lie in the vertical plane
             defined by the slip vector.
+        remove_invalid : A boolean indicating whether points that have been
+            moved off the fault's surface and have undefined values should be
+            removed from the results. If True, only valid points will be 
+            returned, if False, the result may have NaN's.
 
     Returns:
     --------
@@ -130,7 +141,8 @@ def inclined_shear(faultxyz, horxyz, slip, alpha):
     rotated_faultxyz = rotate(faultxyz, theta, alpha)
 
     # In the new reference frame, we can just use vertical shear...
-    moved_xyz = vertical_shear(rotated_faultxyz, rotated_horxyz, slip)
+    moved_xyz = vertical_shear(rotated_faultxyz, rotated_horxyz, slip[:2],
+                               remove_invalid)
 
     # Then we rotate things back to the original reference frame.
     return rotate(moved_xyz, theta, alpha, inverse=True)
