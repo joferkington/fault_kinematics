@@ -120,7 +120,9 @@ def inclined_shear(faultxyz, horxyz, slip, alpha, remove_invalid=True):
         alpha : A shear angle (in degrees) measured from vertical (i.e.
             vertical shear corresponds to alpha=0) through which the hanging
             wall deforms. This is constrained to lie in the vertical plane
-            defined by the slip vector.
+            defined by the slip vector. Alternately, a sequence of three euler
+            angles (representing rotations about the z, y, & x axes in degrees)
+            may be specified.
         remove_invalid : A boolean indicating whether points that have been
             moved off the fault's surface and have undefined values should be
             removed from the results. If True, only valid points will be 
@@ -131,21 +133,25 @@ def inclined_shear(faultxyz, horxyz, slip, alpha, remove_invalid=True):
         movedxyz : An Mx3 array of points representing the "moved" horizon.
     """
     dx, dy = slip
-    theta = np.arctan2(dy, dx)
-    alpha = np.radians(alpha)
+    try:
+        theta, alpha, phi = [np.radians(item) for item in alpha]
+    except TypeError:
+        theta = np.arctan2(dy, dx)
+        alpha = np.radians(alpha)
+        phi = 0
 
     # Rotate slip vector, horizon, and fault into a new reference frame such
     # that "down" is parallel to alpha. 
-    slip = rotate([dx, dy, 0], theta, alpha)[0]
+    dx, dy, ignored = rotate([dx, dy, 0], theta, alpha, phi).ravel()
     rotated_horxyz = rotate(horxyz, theta, alpha)
     rotated_faultxyz = rotate(faultxyz, theta, alpha)
 
     # In the new reference frame, we can just use vertical shear...
-    moved_xyz = vertical_shear(rotated_faultxyz, rotated_horxyz, slip[:2],
+    moved_xyz = vertical_shear(rotated_faultxyz, rotated_horxyz, (dx, dy),
                                remove_invalid)
 
     # Then we rotate things back to the original reference frame.
-    return rotate(moved_xyz, theta, alpha, inverse=True)
+    return rotate(moved_xyz, theta, alpha, phi, inverse=True)
 
 def rotate(xyz, theta, alpha, phi=0, inverse=False):
     """
@@ -190,9 +196,8 @@ def rotate(xyz, theta, alpha, phi=0, inverse=False):
 
 class _Shear(object):
     """
-    A convience class to minimize "roughness" when inverting for the slip 
-    and/or shear angle that best "flattens" the give horizon by moving it along
-    the given fault.
+    A convience class to calculate "roughness" (deviation from horizontal) for
+    multiple offsets and/or shear angles using a given fault and horizon.
     """
     def __init__(self, fault, horizon, alpha=None, overlap_thresh=0.3):
         """
@@ -239,7 +244,7 @@ class _Shear(object):
 
     def metric(self, result, slip):
         """The "roughness" of the result."""
-        if len(result) > 0:
+        if len(result) > 1:
             # Variance of the elevation values
             roughness = result[:,-1].var()
         else:
