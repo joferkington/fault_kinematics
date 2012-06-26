@@ -1,4 +1,4 @@
-from inclined_shear import rotate
+from homogeneous_simple_shear import rotate
 import numpy as np
 import itertools
 
